@@ -4,6 +4,7 @@ import re
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from typing import Mapping
 
 
 if TYPE_CHECKING:
@@ -50,9 +51,11 @@ def acquire(client: httpx.Client) -> Session:
     )
 
 
-def _find_cookie(cookies: dict[str, str], name_prefix: str) -> tuple[str, str]:
+def _find_cookie(
+    cookies: Mapping[str, str | None], name_prefix: str
+) -> tuple[str, str]:
     for name, value in cookies.items():
-        if name.startswith(name_prefix):
+        if name.startswith(name_prefix) and value is not None:
             return name, value
     return "", ""
 

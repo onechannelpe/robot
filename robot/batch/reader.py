@@ -36,10 +36,11 @@ def read_rucs(path: Path, *, dedupe: bool = True) -> tuple[list[RUC], ReadStats]
             except ValueError:
                 stats.ignored += 1
                 continue
-            if dedupe and ruc in seen:
+            dedupe_key = str(ruc)
+            if dedupe and dedupe_key in seen:
                 stats.duplicates += 1
                 continue
-            seen.add(ruc)
+            seen.add(dedupe_key)
             stats.valid += 1
             rucs.append(ruc)
 

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import Any
 
-from seleniumbase import SB
+from seleniumbase import SB  # type: ignore[import-untyped]
 
 from robot.domain import RUC
 from robot.observability import kv
@@ -75,7 +76,7 @@ class OsiptelProvider:
         if self._sb is not None:
             return self._sb
 
-        kwargs = {"uc": True, "headed": True, "xvfb": True}
+        kwargs: dict[str, Any] = {"uc": True, "headed": True, "xvfb": True}
         if self._proxy:
             kwargs["proxy"] = self._proxy
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from seleniumbase import SB
+from seleniumbase import SB  # type: ignore[import-untyped]
 
 from robot.osiptel.session import HOME_URL
 

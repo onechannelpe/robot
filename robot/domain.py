@@ -11,12 +11,12 @@ _RUC_RE = re.compile(r"^\d{11}$")
 
 
 class RUC(UserString):
-    def __new__(cls, value: str) -> RUC:
+    def __init__(self, value: str) -> None:
         v = value.strip()
         if not _RUC_RE.match(v):
             msg = f"invalid RUC {value!r}: must be 11 digits"
             raise ValueError(msg)
-        return super().__new__(cls, v)
+        super().__init__(v)
 
 
 class Status(str, Enum):

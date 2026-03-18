@@ -9,6 +9,7 @@ from robot.batch.runner import run
 from robot.batch.writer import OutputWriter, load_checkpoint
 from robot.observability import configure_logging, kv, new_run_id
 from robot.osiptel.provider import OsiptelProvider
+from robot.provider import LineCountProvider
 from robot.snapshot.provider import SnapshotProvider
 
 
@@ -26,11 +27,14 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit("no valid RUCs in input")
 
     checkpoint = load_checkpoint(cfg.output_csv)
-    provider = (
-        SnapshotProvider(cfg.snapshot_json)
-        if cfg.use_snapshot
-        else OsiptelProvider.from_env(cfg.page_size)
-    )
+    provider: LineCountProvider
+    if cfg.use_snapshot:
+        if cfg.snapshot_json is None:
+            msg = "--snapshot required with --snapshot-mode"
+            raise RuntimeError(msg)
+        provider = SnapshotProvider(cfg.snapshot_json)
+    else:
+        provider = OsiptelProvider.from_env(cfg.page_size)
 
     with provider, OutputWriter(cfg.output_csv, cfg.output_mode) as writer:
         summary = run(
