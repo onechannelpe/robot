@@ -8,6 +8,8 @@ from threading import Condition
 
 from dotenv import load_dotenv
 
+from robot.errors import TransientTransportError
+
 
 @dataclass(frozen=True)
 class ProxyConfig:
@@ -85,7 +87,7 @@ class ProxyPool:
                 remaining = deadline - now
                 if remaining <= 0:
                     msg = "no proxy available before timeout"
-                    raise RuntimeError(msg)
+                    raise TransientTransportError(msg)
                 self._cv.wait(timeout=remaining)
 
     def release(self, lease: ProxyLease, *, cooldown_s: float = 0.0) -> None:

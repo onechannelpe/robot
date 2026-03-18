@@ -7,6 +7,7 @@ from robot.errors import (
     CaptchaError,
     ParseError,
     PermanentInputError,
+    RobotError,
     TransientTransportError,
 )
 
@@ -19,8 +20,7 @@ class RetryDecision:
     cooldown_proxy_s: float
 
 
-def decide(exc: Exception, *, default_cooldown_s: float) -> RetryDecision:
-    text = str(exc).lower()
+def decide(exc: RobotError, *, default_cooldown_s: float) -> RetryDecision:
     if isinstance(exc, PermanentInputError):
         return RetryDecision(
             error_code="permanent_input_error",
@@ -55,14 +55,6 @@ def decide(exc: Exception, *, default_cooldown_s: float) -> RetryDecision:
             retry_same_session=True,
             rotate_session=False,
             cooldown_proxy_s=0.0,
-        )
-
-    if "connection refused" in text or "chrome not reachable" in text:
-        return RetryDecision(
-            error_code="driver_disconnect",
-            retry_same_session=False,
-            rotate_session=True,
-            cooldown_proxy_s=default_cooldown_s,
         )
 
     return RetryDecision(

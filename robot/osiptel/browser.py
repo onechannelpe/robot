@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from selenium.common.exceptions import WebDriverException
 from seleniumbase import SB  # type: ignore[import-untyped]
 
 from robot.domain import RUC
@@ -86,10 +87,14 @@ class BrowserSession:
         if self._settings.chrome_binary:
             kwargs["binary_location"] = self._settings.chrome_binary
 
-        with timed() as timer:
-            self._sb_cm = SB(**kwargs)
-            self._sb = self._sb_cm.__enter__()
-            self._sb.activate_cdp_mode(HOME_URL)
+        try:
+            with timed() as timer:
+                self._sb_cm = SB(**kwargs)
+                self._sb = self._sb_cm.__enter__()
+                self._sb.activate_cdp_mode(HOME_URL)
+        except WebDriverException as exc:
+            msg = f"failed to open browser session: {type(exc).__name__}: {exc}"
+            raise TransientTransportError(msg) from exc
         logger.info(
             "session_open %s",
             kv(
@@ -165,7 +170,7 @@ class BrowserSession:
     def _require_sb(self) -> SB:
         if self._sb is None:
             msg = "browser session not open"
-            raise RuntimeError(msg)
+            raise TransientTransportError(msg)
         return self._sb
 
     def _wait_ready(self, timeout_s: float = 25.0, poll_s: float = 0.25) -> None:

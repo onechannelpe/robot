@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from robot.domain import RUC, Result, Status
+from robot.errors import RobotError
 from robot.observability import kv, timed
 from robot.osiptel.browser import BrowserSession, BrowserSettings
 from robot.runtime.retry import decide
@@ -72,81 +73,96 @@ class Worker:
             except queue.Empty:
                 break
 
-            result = self._process_ruc(ruc)
-            self._writer.write(result)
+            try:
+                result = self._process_ruc(ruc)
+                self._writer.write(result)
 
-            summary.processed += 1
-            if result.status == Status.OK:
-                summary.succeeded += 1
-            else:
-                summary.failed += 1
-
-            self._task_queue.task_done()
+                summary.processed += 1
+                if result.status == Status.OK:
+                    summary.succeeded += 1
+                else:
+                    summary.failed += 1
+            finally:
+                self._task_queue.task_done()
         self._close_session(cooldown_s=0.0)
         return summary
 
     def _process_ruc(self, ruc: RUC) -> Result:
         attempts = self._settings.same_session_retries + 2
         for attempt_no in range(1, attempts + 1):
-            session = self._ensure_session()
             try:
-                with timed() as timer:
-                    lines = session.count_lines(ruc)
-                logger.info(
-                    "lookup_ok %s",
-                    kv(
-                        run_id=self._run_id,
-                        worker_id=self._worker_id,
-                        session_id=session.session_id,
-                        proxy_id=session.proxy_id,
-                        egress_ip=session.egress_ip,
-                        ruc=ruc,
-                        attempt=attempt_no,
-                        elapsed_ms=timer.elapsed_ms,
-                        lines=lines,
-                    ),
+                session = self._ensure_session()
+                return self._execute_attempt(session, ruc, attempt_no=attempt_no)
+            except RobotError as exc:
+                maybe_result = self._handle_failure(
+                    ruc, exc, attempt_no=attempt_no, attempts=attempts
                 )
-                self._session_uses += 1
-                self._maybe_rotate_session_after_success()
-                return Result(ruc=ruc, registered_lines=lines, status=Status.OK)
-            except Exception as exc:
-                decision = decide(exc, default_cooldown_s=self._settings.ban_cooldown_s)
-                logger.warning(
-                    "lookup_failed %s",
-                    kv(
-                        run_id=self._run_id,
-                        worker_id=self._worker_id,
-                        session_id=session.session_id,
-                        proxy_id=session.proxy_id,
-                        egress_ip=session.egress_ip,
-                        ruc=ruc,
-                        attempt=attempt_no,
-                        error_code=decision.error_code,
-                        error_detail=str(exc),
-                    ),
-                )
-
-                if decision.rotate_session:
-                    self._close_session(cooldown_s=decision.cooldown_proxy_s)
-
-                if decision.retry_same_session and attempt_no < attempts:
-                    continue
-
-                if decision.rotate_session and attempt_no < attempts:
-                    continue
-
-                return Result(
-                    ruc=ruc,
-                    status=Status.FAILED,
-                    error_code=decision.error_code,
-                    error_detail=str(exc),
-                )
+                if maybe_result is not None:
+                    return maybe_result
+                continue
 
         return Result(
             ruc=ruc,
             status=Status.FAILED,
             error_code="exhausted_retries",
             error_detail="unexpected retry exhaustion",
+        )
+
+    def _execute_attempt(self, session: BrowserSession, ruc: RUC, *, attempt_no: int) -> Result:
+        with timed() as timer:
+            lines = session.count_lines(ruc)
+        logger.info(
+            "lookup_ok %s",
+            kv(
+                run_id=self._run_id,
+                worker_id=self._worker_id,
+                session_id=session.session_id,
+                proxy_id=session.proxy_id,
+                egress_ip=session.egress_ip,
+                ruc=ruc,
+                attempt=attempt_no,
+                elapsed_ms=timer.elapsed_ms,
+                lines=lines,
+            ),
+        )
+        self._session_uses += 1
+        self._maybe_rotate_session_after_success()
+        return Result(ruc=ruc, registered_lines=lines, status=Status.OK)
+
+    def _handle_failure(
+        self, ruc: RUC, exc: RobotError, *, attempt_no: int, attempts: int
+    ) -> Result | None:
+        session = self._session
+        decision = decide(exc, default_cooldown_s=self._settings.ban_cooldown_s)
+        logger.warning(
+            "lookup_failed %s",
+            kv(
+                run_id=self._run_id,
+                worker_id=self._worker_id,
+                session_id=session.session_id if session else "",
+                proxy_id=session.proxy_id if session else "",
+                egress_ip=session.egress_ip if session else "",
+                ruc=ruc,
+                attempt=attempt_no,
+                error_code=decision.error_code,
+                error_detail=str(exc),
+            ),
+        )
+
+        if decision.rotate_session:
+            self._close_session(cooldown_s=decision.cooldown_proxy_s)
+
+        can_retry = attempt_no < attempts and (
+            decision.retry_same_session or decision.rotate_session
+        )
+        if can_retry:
+            return None
+
+        return Result(
+            ruc=ruc,
+            status=Status.FAILED,
+            error_code=decision.error_code,
+            error_detail=str(exc),
         )
 
     def _ensure_session(self) -> BrowserSession:
@@ -161,7 +177,14 @@ class Worker:
                 chrome_binary=self._settings.chrome_binary,
             ),
         )
-        session.open()
+        try:
+            session.open()
+        except RobotError:
+            self._proxy_pool.release(lease, cooldown_s=self._settings.ban_cooldown_s)
+            raise
+        except Exception:
+            self._proxy_pool.release(lease, cooldown_s=0.0)
+            raise
 
         self._lease = lease
         self._session = session
