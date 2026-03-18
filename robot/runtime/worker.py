@@ -108,7 +108,9 @@ class Worker:
             error_detail="unexpected retry exhaustion",
         )
 
-    def _execute_attempt(self, session: BrowserSession, ruc: RUC, *, attempt_no: int) -> Result:
+    def _execute_attempt(
+        self, session: BrowserSession, ruc: RUC, *, attempt_no: int
+    ) -> Result:
         with timed() as timer:
             lines = session.count_lines(ruc)
         logger.info(
