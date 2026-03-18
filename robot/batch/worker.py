@@ -40,7 +40,6 @@ def process(provider: LineCountProvider, ruc: RUC, *, run_id: str) -> Result:
                 op_id=op_id,
                 ruc=ruc,
                 error_code="provider_error",
-                error=str(exc),
             ),
         )
         return Result(
