@@ -4,7 +4,7 @@ python = "3.14.3"
 ruff = "0.14.5"
 
 [tasks.install]
-run = "uv sync"
+run = "uv sync --all-packages"
 
 [tasks.update]
 run = "uv sync -U"
