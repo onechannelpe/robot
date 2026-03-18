@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import csv
 import threading
-from pathlib import Path
 
-from robot.domain import Result
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from robot.domain import Result
+
 
 _HEADERS = {
     "counts-only": ["ruc", "registered_lines"],
-    "detailed":    ["ruc", "registered_lines", "status", "error_code", "error_detail"],
+    "detailed": ["ruc", "registered_lines", "status", "error_code", "error_detail"],
 }
 
 
@@ -23,7 +29,8 @@ def load_checkpoint(path: Path) -> set[str]:
 class OutputWriter:
     def __init__(self, path: Path, mode: str) -> None:
         if mode not in _HEADERS:
-            raise ValueError(f"unknown output mode {mode!r}")
+            msg = f"unknown output mode {mode!r}"
+            raise ValueError(msg)
         self._mode = mode
         self._lock = threading.Lock()
         is_new = not path.exists() or path.stat().st_size == 0
@@ -35,7 +42,13 @@ class OutputWriter:
 
     def write(self, result: Result) -> None:
         if self._mode == "detailed":
-            row = [result.ruc, result.registered_lines, result.status.value, result.error_code, result.error_detail]
+            row = [
+                result.ruc,
+                result.registered_lines,
+                result.status.value,
+                result.error_code,
+                result.error_detail,
+            ]
         else:
             row = [result.ruc, result.registered_lines]
         with self._lock:
@@ -46,7 +59,7 @@ class OutputWriter:
         with self._lock:
             self._f.close()
 
-    def __enter__(self) -> "OutputWriter":
+    def __enter__(self) -> OutputWriter:
         return self
 
     def __exit__(self, *_) -> None:

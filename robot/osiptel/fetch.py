@@ -1,15 +1,23 @@
 from __future__ import annotations
 
-import httpx
+from typing import TYPE_CHECKING
 
-from robot.domain import RUC
 from robot.osiptel.request import build_body
-from robot.osiptel.session import Session
+
+
+if TYPE_CHECKING:
+    import httpx
+
+    from robot.domain import RUC
+    from robot.osiptel.session import Session
+
 
 _API_URL = "https://checatuslineas.osiptel.gob.pe/Consultas/GetAllCabeceraConsulta/"
 
 
-def count_lines(client: httpx.Client, session: Session, ruc: RUC, token: str, page_size: int) -> int:
+def count_lines(
+    client: httpx.Client, session: Session, ruc: RUC, token: str, page_size: int
+) -> int:
     total = None
     start = 0
     draw = 1
@@ -26,7 +34,15 @@ def count_lines(client: httpx.Client, session: Session, ruc: RUC, token: str, pa
     return total or 0
 
 
-def _fetch_page(client: httpx.Client, session: Session, ruc: RUC, token: str, draw: int, start: int, length: int) -> dict:
+def _fetch_page(
+    client: httpx.Client,
+    session: Session,
+    ruc: RUC,
+    token: str,
+    draw: int,
+    start: int,
+    length: int,
+) -> dict:
     resp = client.post(
         _API_URL,
         data=build_body(ruc, token, draw, start, length),

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from robot.batch.reader import ReadStats
-from robot.batch.worker import Provider, process
-from robot.batch.writer import OutputWriter
+from robot.batch.worker import process
 from robot.domain import RUC, Status
+
+
+if TYPE_CHECKING:
+    from robot.batch.reader import ReadStats
+    from robot.batch.writer import OutputWriter
+    from robot.provider import LineCountProvider
 
 
 @dataclass
@@ -24,10 +29,12 @@ class Summary:
 def run(
     rucs: list[RUC],
     checkpoint: set[str],
-    provider: Provider,
+    provider: LineCountProvider,
     writer: OutputWriter,
     concurrency: int,
     read_stats: ReadStats,
+    *,
+    run_id: str,
 ) -> Summary:
     summary = Summary(
         rows_read=read_stats.rows_read,
@@ -39,7 +46,9 @@ def run(
     summary.skipped = len(rucs) - len(pending)
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(process, provider, ruc): ruc for ruc in pending}
+        futures = {
+            pool.submit(process, provider, ruc, run_id=run_id): ruc for ruc in pending
+        }
         for future in as_completed(futures):
             result = future.result()
             summary.processed += 1

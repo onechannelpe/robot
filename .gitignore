@@ -1,4 +1,7 @@
-*.egg-info
+.debug
+__pycache__
+.pytest_cache
 
-__pycache__/
+*.egg-info
 *.csv
+.env

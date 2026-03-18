@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,7 +23,9 @@ def load(argv: list[str] | None = None) -> Config:
     p = argparse.ArgumentParser(prog="robot")
     p.add_argument("--input", required=True, type=Path)
     p.add_argument("--output", required=True, type=Path)
-    p.add_argument("--output-mode", default="counts-only", choices=["counts-only", "detailed"])
+    p.add_argument(
+        "--output-mode", default="counts-only", choices=["counts-only", "detailed"]
+    )
     p.add_argument("--page-size", type=int, default=100)
     p.add_argument("--concurrency", type=int, default=1)
     p.add_argument("--dedupe", action=argparse.BooleanOptionalAction, default=True)

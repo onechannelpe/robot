@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import csv
+
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from robot.domain import RUC
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @dataclass
