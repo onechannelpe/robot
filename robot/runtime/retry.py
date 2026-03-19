@@ -45,15 +45,15 @@ def decide(exc: RobotError, *, default_cooldown_s: float) -> RetryDecision:
     if isinstance(exc, ParseError):
         return RetryDecision(
             error_code="parse_error",
-            retry_same_session=True,
-            rotate_session=False,
+            retry_same_session=False,
+            rotate_session=True,
             cooldown_proxy_s=0.0,
         )
     if isinstance(exc, TransientTransportError):
         return RetryDecision(
             error_code="transport_error",
-            retry_same_session=True,
-            rotate_session=False,
+            retry_same_session=False,
+            rotate_session=True,
             cooldown_proxy_s=0.0,
         )
 
