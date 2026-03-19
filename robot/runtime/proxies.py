@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from os import getenv
 from threading import Condition
 
@@ -11,26 +11,26 @@ from dotenv import load_dotenv
 from robot.errors import TransientTransportError
 
 
+_STICKY_HTTP_PORT_MIN = 10000
+_STICKY_HTTP_PORT_MAX = 10900
+
+
 @dataclass(frozen=True)
 class ProxyConfig:
     proxy_id: str
     user: str
     password: str
     host: str = "proxy.geonode.io"
-    port: str = "9000"
+    port: str = "10000"
     proxy_type: str = ""
     country: str = ""
     state: str = ""
     city: str = ""
     asn: str = ""
     strict_off: bool = False
-    lifetime: int | None = None
+    lifetime: int = 10
 
     def with_session_username(self, session_id: str) -> str:
-        del session_id
-        if not self.proxy_type:
-            return self.user
-
         base = f"{self.user}-type-{self.proxy_type}"
         if self.country:
             base += f"-country-{self.country}"
@@ -42,8 +42,8 @@ class ProxyConfig:
             base += f"-asn-{self.asn}"
         if self.strict_off:
             base += "-strict-off"
-        if self.lifetime is not None:
-            base += f"-lifetime-{self.lifetime}"
+        base += f"-session-{session_id}"
+        base += f"-lifetime-{self.lifetime}"
         return base
 
     def as_selenium_proxy(self, session_id: str) -> str:
@@ -51,29 +51,31 @@ class ProxyConfig:
         return f"{username}:{self.password}@{self.host}:{self.port}"
 
 
-@dataclass
+@dataclass(frozen=True)
 class ProxyLease:
     proxy: ProxyConfig
+    slot_id: int
 
 
 @dataclass
-class _ProxyState:
-    proxy: ProxyConfig
+class _SlotState:
+    slot_id: int
     in_use: bool = False
     cooldown_until: float = 0.0
 
 
 @dataclass
 class ProxyPool:
-    proxies: list[ProxyConfig]
-    _states: list[_ProxyState] = field(init=False)
+    proxy: ProxyConfig
+    capacity: int
+    _states: list[_SlotState] = field(init=False)
     _cv: Condition = field(default_factory=Condition, init=False)
 
     def __post_init__(self) -> None:
-        if not self.proxies:
-            msg = "proxy pool cannot be empty"
+        if self.capacity < 1:
+            msg = "proxy session capacity must be >= 1"
             raise ValueError(msg)
-        self._states = [_ProxyState(proxy=p) for p in self.proxies]
+        self._states = [_SlotState(slot_id=i) for i in range(1, self.capacity + 1)]
 
     def acquire(self, *, wait_s: float = 30.0) -> ProxyLease:
         deadline = time.monotonic() + wait_s
@@ -86,40 +88,46 @@ class ProxyPool:
                     if state.cooldown_until > now:
                         continue
                     state.in_use = True
-                    return ProxyLease(proxy=state.proxy)
+                    lease_proxy = replace(
+                        self.proxy,
+                        proxy_id=f"{self.proxy.proxy_id}-slot-{state.slot_id}",
+                    )
+                    return ProxyLease(proxy=lease_proxy, slot_id=state.slot_id)
                 remaining = deadline - now
                 if remaining <= 0:
-                    msg = "no proxy available before timeout"
+                    msg = "no sticky session slot available before timeout"
                     raise TransientTransportError(msg)
                 self._cv.wait(timeout=remaining)
 
     def release(self, lease: ProxyLease, *, cooldown_s: float = 0.0) -> None:
         with self._cv:
             for state in self._states:
-                if state.proxy.proxy_id != lease.proxy.proxy_id:
+                if state.slot_id != lease.slot_id:
                     continue
                 state.in_use = False
                 if cooldown_s > 0:
                     state.cooldown_until = max(
-                        state.cooldown_until, time.monotonic() + cooldown_s
+                        state.cooldown_until,
+                        time.monotonic() + cooldown_s,
                     )
                 self._cv.notify_all()
                 return
-        msg = f"unknown proxy lease {lease.proxy.proxy_id}"
+
+        msg = f"unknown sticky session slot {lease.slot_id}"
         raise RuntimeError(msg)
 
 
-def build_pool_from_env(*, env_file: str = ".env") -> ProxyPool:
+def build_pool_from_env(*, env_file: str = ".env", capacity: int) -> ProxyPool:
     load_dotenv(env_file, override=False)
-    list_raw = getenv("GEONODE_PROXY_LIST", "").strip()
-    if list_raw:
-        proxies = _parse_proxy_list(list_raw)
-        return ProxyPool(proxies=proxies)
+
+    if getenv("GEONODE_PROXY_LIST", "").strip():
+        msg = "GEONODE_PROXY_LIST is not supported in sticky-only mode"
+        raise RuntimeError(msg)
 
     user = getenv("GEONODE_USER", "")
     password = getenv("GEONODE_PASS", "")
     host = getenv("GEONODE_HOST", "proxy.geonode.io")
-    port = getenv("GEONODE_PORT", "9000")
+    port = getenv("GEONODE_PORT", "10000")
     proxy_type = getenv("GEONODE_TYPE", "")
     country = getenv("GEONODE_COUNTRY", "")
     state = getenv("GEONODE_STATE", "")
@@ -127,13 +135,30 @@ def build_pool_from_env(*, env_file: str = ".env") -> ProxyPool:
     asn = getenv("GEONODE_ASN", "")
     strict_off = getenv("GEONODE_STRICT_OFF", "").lower() in {"1", "true", "yes"}
     lifetime_raw = getenv("GEONODE_LIFETIME", "").strip()
-    lifetime = int(lifetime_raw) if lifetime_raw else None
+    lifetime = int(lifetime_raw) if lifetime_raw else 10
 
     if not user or not password:
         msg = "missing GEONODE_USER or GEONODE_PASS"
         raise RuntimeError(msg)
     if proxy_type not in {"residential", "datacenter", "mix"}:
         msg = "GEONODE_TYPE must be one of residential|datacenter|mix"
+        raise RuntimeError(msg)
+
+    try:
+        port_num = int(port)
+    except ValueError as exc:
+        msg = "GEONODE_PORT must be a valid integer"
+        raise RuntimeError(msg) from exc
+
+    if not (_STICKY_HTTP_PORT_MIN <= port_num <= _STICKY_HTTP_PORT_MAX):
+        msg = (
+            "sticky-only mode requires GEONODE_PORT in 10000-10900 "
+            f"(received {port_num})"
+        )
+        raise RuntimeError(msg)
+
+    if lifetime < 3 or lifetime > 1440:
+        msg = "GEONODE_LIFETIME must be between 3 and 1440 minutes"
         raise RuntimeError(msg)
 
     proxy = ProxyConfig(
@@ -150,34 +175,4 @@ def build_pool_from_env(*, env_file: str = ".env") -> ProxyPool:
         strict_off=strict_off,
         lifetime=lifetime,
     )
-    return ProxyPool(proxies=[proxy])
-
-
-def _parse_proxy_list(raw: str) -> list[ProxyConfig]:
-    proxies: list[ProxyConfig] = []
-    for idx, item in enumerate(raw.split(","), start=1):
-        token = item.strip()
-        if not token:
-            continue
-        try:
-            credentials, endpoint = token.split("@", 1)
-            user, password = credentials.split(":", 1)
-            host, port = endpoint.split(":", 1)
-        except ValueError as exc:
-            msg = f"invalid GEONODE_PROXY_LIST entry: {token!r}"
-            raise RuntimeError(msg) from exc
-
-        proxies.append(
-            ProxyConfig(
-                proxy_id=f"proxy-{idx}",
-                user=user,
-                password=password,
-                host=host,
-                port=port,
-            )
-        )
-
-    if not proxies:
-        msg = "GEONODE_PROXY_LIST is set but empty"
-        raise RuntimeError(msg)
-    return proxies
+    return ProxyPool(proxy=proxy, capacity=capacity)
