@@ -207,6 +207,16 @@ def _collect_results(
     return summary
 
 
+def _join_workers(processes: list[WorkerProcess], *, timeout_s: float = 5.0) -> None:
+    for entry in processes:
+        entry.process.join(timeout=timeout_s)
+    for entry in processes:
+        if entry.process.is_alive():
+            entry.process.terminate()
+    for entry in processes:
+        entry.process.join(timeout=timeout_s)
+
+
 def run_dispatcher(
     cfg: RunConfig,
     *,
@@ -240,11 +250,13 @@ def run_dispatcher(
     producer.join()
     produce_result = produce_holder["result"]
     if produce_result.error is not None:
+        _join_workers(processes)
         msg = f"failed while reading input: {produce_result.error}"
         raise RuntimeError(msg)
 
     read_stats = produce_result.read_stats
     if read_stats.valid == 0:
+        _join_workers(processes)
         msg = "no valid RUCs in input"
         raise RuntimeError(msg)
 
@@ -256,7 +268,6 @@ def run_dispatcher(
         read_stats=read_stats,
     )
     task_queue.join()
-    for entry in processes:
-        entry.process.join(timeout=5.0)
+    _join_workers(processes)
 
     return summary
