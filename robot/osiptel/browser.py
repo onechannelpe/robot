@@ -28,9 +28,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 HOME_URL = "https://checatuslineas.osiptel.gob.pe/"
-_IP_CHECK_URL = "https://ip-api.com/json"
+_IP_JSONP_URL = "https://api.ipify.org?format=jsonp"
 
 _STATE_EXPR = """(() => ({
+  ready: document.readyState || '',
+  href: location.href || '',
+  title: document.title || '',
   scripts: document.scripts ? document.scripts.length : -1,
   gc: typeof window.grecaptcha,
   key: (document.querySelector('#hiddenRecaptchaKey')||{}).value || ''
@@ -176,9 +179,12 @@ class BrowserSession:
     def _wait_ready(self, timeout_s: float = 25.0, poll_s: float = 0.25) -> None:
         sb = self._require_sb()
         deadline = time.monotonic() + timeout_s
+        last_state: dict[str, Any] = {}
         with timed() as timer:
             while time.monotonic() < deadline:
                 state = sb.execute_script(_STATE_EXPR) or {}
+                if isinstance(state, dict):
+                    last_state = state
                 if (
                     state.get("scripts", 0) >= 20
                     and state.get("gc") == "object"
@@ -190,7 +196,15 @@ class BrowserSession:
                     )
                     return
                 time.sleep(poll_s)
-        msg = "osiptel page not ready"
+        msg = (
+            "osiptel page not ready "
+            f"ready={last_state.get('ready', '')} "
+            f"href={last_state.get('href', '')} "
+            f"title={last_state.get('title', '')} "
+            f"scripts={last_state.get('scripts', '')} "
+            f"gc={last_state.get('gc', '')} "
+            f"has_key={bool(last_state.get('key'))}"
+        )
         raise TransientTransportError(msg)
 
     def _generate_recaptcha_token(
@@ -228,23 +242,46 @@ class BrowserSession:
 
     def _resolve_ip(self) -> str:
         sb = self._require_sb()
-        script = f"""(() => {{
-  const xhr = new XMLHttpRequest();
-  xhr.open('GET', '{_IP_CHECK_URL}', false);
-  xhr.send();
-  return xhr.responseText || '';
+        start_expr = f"""(() => {{
+  window.__ipVal = '';
+  window.__ipErr = '';
+  const cb = '__ipcb_' + Math.random().toString(36).slice(2);
+  const script = document.createElement('script');
+  function cleanup() {{
+    try {{ delete window[cb]; }} catch (_) {{}}
+    if (script.parentNode) {{
+      script.parentNode.removeChild(script);
+    }}
+  }}
+  window[cb] = function(payload) {{
+    try {{
+      window.__ipVal = (payload && payload.ip) ? String(payload.ip) : '';
+    }} catch (_) {{
+      window.__ipVal = '';
+    }}
+    cleanup();
+  }};
+  script.onerror = function() {{
+    window.__ipErr = 'ip_jsonp_load_error';
+    cleanup();
+  }};
+  script.src = '{_IP_JSONP_URL}&callback=' + cb;
+  document.head.appendChild(script);
+  return true;
 }})()"""
-        raw = sb.execute_script(script)
-        if not isinstance(raw, str) or not raw:
-            return ""
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            return ""
-        if not isinstance(payload, dict):
-            return ""
-        value = payload.get("query", "")
-        return str(value) if value else ""
+
+        sb.execute_script(start_expr)
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            ip_value = sb.execute_script("(() => window.__ipVal || '')()") or ""
+            if isinstance(ip_value, str) and ip_value:
+                return ip_value
+
+            ip_err = sb.execute_script("(() => window.__ipErr || '')()") or ""
+            if ip_err:
+                return ""
+            time.sleep(0.2)
+        return ""
 
 
 def _fetch_page(

@@ -64,6 +64,7 @@ class Worker:
         self._lease: ProxyLease | None = None
         self._session: BrowserSession | None = None
         self._session_uses = 0
+        self._last_proxy_id = ""
 
     def run(self) -> WorkerSummary:
         summary = WorkerSummary()
@@ -142,7 +143,7 @@ class Worker:
                 run_id=self._run_id,
                 worker_id=self._worker_id,
                 session_id=session.session_id if session else "",
-                proxy_id=session.proxy_id if session else "",
+                proxy_id=session.proxy_id if session else self._last_proxy_id,
                 egress_ip=session.egress_ip if session else "",
                 ruc=ruc,
                 attempt=attempt_no,
@@ -172,6 +173,7 @@ class Worker:
             return self._session
 
         lease = self._proxy_pool.acquire(wait_s=60.0)
+        self._last_proxy_id = lease.proxy.proxy_id
         session = BrowserSession(
             proxy=lease.proxy,
             settings=BrowserSettings(
@@ -179,14 +181,13 @@ class Worker:
                 chrome_binary=self._settings.chrome_binary,
             ),
         )
+        opened = False
         try:
             session.open()
-        except RobotError:
-            self._proxy_pool.release(lease, cooldown_s=self._settings.ban_cooldown_s)
-            raise
-        except Exception:
-            self._proxy_pool.release(lease, cooldown_s=0.0)
-            raise
+            opened = True
+        finally:
+            if not opened:
+                self._proxy_pool.release(lease, cooldown_s=0.0)
 
         self._lease = lease
         self._session = session
@@ -231,3 +232,4 @@ class Worker:
         if self._lease is not None:
             self._proxy_pool.release(self._lease, cooldown_s=cooldown_s)
             self._lease = None
+        self._last_proxy_id = ""
