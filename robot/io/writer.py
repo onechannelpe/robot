@@ -27,14 +27,15 @@ def load_checkpoint(path: Path) -> set[str]:
 
 
 class OutputWriter:
-    def __init__(self, path: Path, mode: str) -> None:
+    def __init__(self, path: Path, mode: str, *, resume: bool) -> None:
         if mode not in _HEADERS:
             msg = f"unknown output mode {mode!r}"
             raise ValueError(msg)
         self._mode = mode
         self._lock = threading.Lock()
-        is_new = not path.exists() or path.stat().st_size == 0
-        self._file = path.open("a", newline="", encoding="utf-8")
+        is_new = not resume or not path.exists() or path.stat().st_size == 0
+        open_mode = "a" if resume else "w"
+        self._file = path.open(open_mode, newline="", encoding="utf-8")
         self._writer = csv.writer(self._file)
         if is_new:
             self._writer.writerow(_HEADERS[mode])

@@ -41,14 +41,19 @@ def kv(**fields: object) -> str:
 
 @dataclass
 class OpTimer:
-    elapsed_ms: int
+    _start: float
+    _stop: float | None = None
+
+    @property
+    def elapsed_ms(self) -> int:
+        end = self._stop if self._stop is not None else time.perf_counter()
+        return int((end - self._start) * 1000)
 
 
 @contextmanager
 def timed() -> Iterator[OpTimer]:
-    start = time.perf_counter()
-    timer = OpTimer(elapsed_ms=0)
+    timer = OpTimer(_start=time.perf_counter())
     try:
         yield timer
     finally:
-        timer.elapsed_ms = int((time.perf_counter() - start) * 1000)
+        timer._stop = time.perf_counter()

@@ -41,18 +41,21 @@ def run(cfg: Config, *, run_id: str) -> Summary:
         msg = "no valid RUCs in input"
         raise RuntimeError(msg)
 
-    checkpoint = load_checkpoint(cfg.output_csv)
-    pending = [ruc for ruc in rucs if str(ruc) not in checkpoint]
+    if cfg.resume:
+        checkpoint = load_checkpoint(cfg.output_csv)
+        pending = [ruc for ruc in rucs if str(ruc) not in checkpoint]
+    else:
+        pending = rucs
 
     summary = Summary(
         rows_read=read_stats.rows_read,
         valid=read_stats.valid,
         ignored=read_stats.ignored,
         duplicates=read_stats.duplicates,
-        skipped=len(rucs) - len(pending),
+        skipped=(len(rucs) - len(pending)) if cfg.resume else 0,
     )
 
-    with OutputWriter(cfg.output_csv, cfg.output_mode) as writer:
+    with OutputWriter(cfg.output_csv, cfg.output_mode, resume=cfg.resume) as writer:
         if cfg.use_snapshot:
             snapshot_summary = _run_snapshot(cfg, pending, writer)
         else:

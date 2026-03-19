@@ -17,6 +17,7 @@ class Config:
     debug: bool
     use_snapshot: bool
     snapshot_json: Path | None
+    resume: bool
     session_budget: int
     wait_min_s: float
     wait_max_s: float
@@ -38,6 +39,7 @@ def load(argv: list[str] | None = None) -> Config:
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--snapshot-mode", action="store_true", default=False)
     parser.add_argument("--snapshot", type=Path, default=None)
+    parser.add_argument("--resume", action="store_true", default=False)
     parser.add_argument("--session-budget", type=int, default=5)
     parser.add_argument("--wait-min-s", type=float, default=10.0)
     parser.add_argument("--wait-max-s", type=float, default=15.0)
@@ -76,6 +78,7 @@ def load(argv: list[str] | None = None) -> Config:
         debug=ns.debug,
         use_snapshot=ns.snapshot_mode,
         snapshot_json=ns.snapshot,
+        resume=ns.resume,
         session_budget=ns.session_budget,
         wait_min_s=ns.wait_min_s,
         wait_max_s=ns.wait_max_s,

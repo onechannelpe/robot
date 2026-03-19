@@ -27,6 +27,10 @@ class ProxyConfig:
     lifetime: int | None = None
 
     def with_session_username(self, session_id: str) -> str:
+        del session_id
+        if not self.proxy_type:
+            return self.user
+
         base = f"{self.user}-type-{self.proxy_type}"
         if self.country:
             base += f"-country-{self.country}"
@@ -38,7 +42,6 @@ class ProxyConfig:
             base += f"-asn-{self.asn}"
         if self.strict_off:
             base += "-strict-off"
-        base += f"-session-{session_id}"
         if self.lifetime is not None:
             base += f"-lifetime-{self.lifetime}"
         return base
@@ -171,7 +174,6 @@ def _parse_proxy_list(raw: str) -> list[ProxyConfig]:
                 password=password,
                 host=host,
                 port=port,
-                proxy_type="residential",
             )
         )
 
