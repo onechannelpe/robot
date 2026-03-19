@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field, replace
 from os import getenv
 from threading import Condition
+from typing import Literal, cast
 
 from dotenv import load_dotenv
 
@@ -13,6 +14,14 @@ from robot.errors import TransientTransportError
 
 _STICKY_HTTP_PORT_MIN = 10000
 _STICKY_HTTP_PORT_MAX = 10900
+_DEFAULT_STICKY_PORT = "10000"
+_GATEWAY_HOST_BY_NAME: dict[str, str] = {
+    "fr": "proxy.geonode.io",
+    "fr_whitelist": "prod-proxy.geonode.io",
+    "us": "us.proxy.geonode.io",
+    "sg": "sg.proxy.geonode.io",
+}
+ProxyType = Literal["residential", "datacenter", "mix"]
 
 
 @dataclass(frozen=True)
@@ -22,7 +31,7 @@ class ProxyConfig:
     password: str
     host: str = "proxy.geonode.io"
     port: str = "10000"
-    proxy_type: str = ""
+    proxy_type: ProxyType = "residential"
     country: str = ""
     state: str = ""
     city: str = ""
@@ -126,9 +135,8 @@ def build_pool_from_env(*, env_file: str = ".env", capacity: int) -> ProxyPool:
 
     user = getenv("GEONODE_USER", "")
     password = getenv("GEONODE_PASS", "")
-    host = getenv("GEONODE_HOST", "proxy.geonode.io")
-    port = getenv("GEONODE_PORT", "10000")
-    proxy_type = getenv("GEONODE_TYPE", "")
+    gateway = getenv("GEONODE_GATEWAY", "fr")
+    proxy_type_raw = getenv("GEONODE_TYPE", "residential")
     country = getenv("GEONODE_COUNTRY", "")
     state = getenv("GEONODE_STATE", "")
     city = getenv("GEONODE_CITY", "")
@@ -140,33 +148,34 @@ def build_pool_from_env(*, env_file: str = ".env", capacity: int) -> ProxyPool:
     if not user or not password:
         msg = "missing GEONODE_USER or GEONODE_PASS"
         raise RuntimeError(msg)
-    if proxy_type not in {"residential", "datacenter", "mix"}:
+    if gateway not in _GATEWAY_HOST_BY_NAME:
+        msg = "GEONODE_GATEWAY must be one of " + "|".join(
+            sorted(_GATEWAY_HOST_BY_NAME)
+        )
+        raise RuntimeError(msg)
+    if proxy_type_raw not in {"residential", "datacenter", "mix"}:
         msg = "GEONODE_TYPE must be one of residential|datacenter|mix"
         raise RuntimeError(msg)
 
-    try:
-        port_num = int(port)
-    except ValueError as exc:
-        msg = "GEONODE_PORT must be a valid integer"
-        raise RuntimeError(msg) from exc
-
-    if not (_STICKY_HTTP_PORT_MIN <= port_num <= _STICKY_HTTP_PORT_MAX):
-        msg = (
-            "sticky-only mode requires GEONODE_PORT in 10000-10900 "
-            f"(received {port_num})"
-        )
-        raise RuntimeError(msg)
+    port_num = int(_DEFAULT_STICKY_PORT)
+    host = _GATEWAY_HOST_BY_NAME[gateway]
 
     if lifetime < 3 or lifetime > 1440:
         msg = "GEONODE_LIFETIME must be between 3 and 1440 minutes"
         raise RuntimeError(msg)
+
+    if not (_STICKY_HTTP_PORT_MIN <= port_num <= _STICKY_HTTP_PORT_MAX):
+        msg = f"invalid sticky port default: {_DEFAULT_STICKY_PORT}"
+        raise RuntimeError(msg)
+
+    proxy_type = cast("ProxyType", proxy_type_raw)
 
     proxy = ProxyConfig(
         proxy_id="proxy-1",
         user=user,
         password=password,
         host=host,
-        port=port,
+        port=_DEFAULT_STICKY_PORT,
         proxy_type=proxy_type,
         country=country,
         state=state,
