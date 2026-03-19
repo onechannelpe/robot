@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from robot.domain import RUC, Result, Status
-from robot.io.reader import read_rucs
+from robot.io.reader import enqueue_rucs
 from robot.io.writer import OutputWriter, load_checkpoint
 from robot.observability import kv, timed
 from robot.runtime.proxies import build_pool_from_env
@@ -36,27 +36,28 @@ class Summary:
 
 
 def run(cfg: Config, *, run_id: str) -> Summary:
-    rucs, read_stats = read_rucs(cfg.input_csv, dedupe=cfg.dedupe)
-    if not rucs:
-        msg = "no valid RUCs in input"
-        raise RuntimeError(msg)
-
     checkpoint = load_checkpoint(cfg.output_csv)
-    pending = [ruc for ruc in rucs if str(ruc) not in checkpoint]
-
-    summary = Summary(
-        rows_read=read_stats.rows_read,
-        valid=read_stats.valid,
-        ignored=read_stats.ignored,
-        duplicates=read_stats.duplicates,
-        skipped=len(rucs) - len(pending),
-    )
-
     with OutputWriter(cfg.output_csv) as writer:
         if cfg.use_snapshot:
-            snapshot_summary = _run_snapshot(cfg, pending, writer)
+            snapshot_summary = _run_snapshot(cfg, writer, checkpoint=checkpoint)
+            summary = Summary(
+                rows_read=snapshot_summary.rows_read,
+                valid=snapshot_summary.valid,
+                ignored=snapshot_summary.ignored,
+                duplicates=snapshot_summary.duplicates,
+                skipped=snapshot_summary.skipped,
+            )
         else:
-            snapshot_summary = _run_live(cfg, pending, writer, run_id=run_id)
+            snapshot_summary = _run_live(
+                cfg, writer, checkpoint=checkpoint, run_id=run_id
+            )
+            summary = Summary(
+                rows_read=snapshot_summary.rows_read,
+                valid=snapshot_summary.valid,
+                ignored=snapshot_summary.ignored,
+                duplicates=snapshot_summary.duplicates,
+                skipped=snapshot_summary.skipped,
+            )
 
     summary.processed = snapshot_summary.processed
     summary.succeeded = snapshot_summary.succeeded
@@ -79,17 +80,39 @@ def run(cfg: Config, *, run_id: str) -> Summary:
     return summary
 
 
-def _run_snapshot(cfg: Config, pending: list[RUC], writer: OutputWriter) -> Summary:
+def _run_snapshot(
+    cfg: Config,
+    writer: OutputWriter,
+    *,
+    checkpoint: set[str],
+) -> Summary:
     from robot.snapshot.provider import SnapshotProvider
 
     if cfg.snapshot_json is None:
         msg = "snapshot_json is required in snapshot mode"
         raise RuntimeError(msg)
 
+    task_queue: queue.Queue[RUC | None] = queue.Queue()
+    read_stats = enqueue_rucs(
+        cfg.input_csv,
+        task_queue,
+        dedupe=cfg.dedupe,
+        checkpoint=checkpoint,
+    )
+    if read_stats.valid == 0:
+        msg = "no valid RUCs in input"
+        raise RuntimeError(msg)
+
     summary = Summary()
     provider = SnapshotProvider(cfg.snapshot_json)
     with provider:
-        for ruc in pending:
+        while True:
+            try:
+                ruc = task_queue.get_nowait()
+            except queue.Empty:
+                break
+            if ruc is None:
+                continue
             with timed() as timer:
                 lines = provider.count_lines(ruc)
             writer.write(Result(ruc=ruc, total_lines=lines, status=Status.OK))
@@ -99,20 +122,46 @@ def _run_snapshot(cfg: Config, pending: list[RUC], writer: OutputWriter) -> Summ
                 "snapshot_lookup_ok %s",
                 kv(ruc=ruc, lines=lines, elapsed_ms=timer.elapsed_ms),
             )
+    summary.rows_read = read_stats.rows_read
+    summary.valid = read_stats.valid
+    summary.ignored = read_stats.ignored
+    summary.duplicates = read_stats.duplicates
+    summary.skipped = read_stats.skipped
     return summary
 
 
 def _run_live(
-    cfg: Config, pending: list[RUC], writer: OutputWriter, *, run_id: str
+    cfg: Config,
+    writer: OutputWriter,
+    *,
+    checkpoint: set[str],
+    run_id: str,
 ) -> Summary:
-    task_queue: queue.Queue[RUC] = queue.Queue()
-    for ruc in pending:
-        task_queue.put(ruc)
-
     proxy_pool = build_pool_from_env(env_file=cfg.env_file)
-    workers = min(cfg.workers, len(proxy_pool.proxies), len(pending)) if pending else 0
+    workers = min(cfg.workers, len(proxy_pool.proxies))
     if workers < 1:
         return Summary()
+    task_queue: queue.Queue[RUC | None] = queue.Queue(maxsize=workers * 100)
+
+    read_stats = enqueue_rucs(
+        cfg.input_csv,
+        task_queue,
+        dedupe=cfg.dedupe,
+        checkpoint=checkpoint,
+    )
+    if read_stats.valid == 0:
+        msg = "no valid RUCs in input"
+        raise RuntimeError(msg)
+    if read_stats.enqueued == 0:
+        return Summary(
+            rows_read=read_stats.rows_read,
+            valid=read_stats.valid,
+            ignored=read_stats.ignored,
+            duplicates=read_stats.duplicates,
+            skipped=read_stats.skipped,
+        )
+
+    workers = min(workers, read_stats.enqueued)
 
     settings = WorkerSettings(
         page_size=cfg.page_size,
@@ -138,6 +187,9 @@ def _run_live(
             )
             for idx in range(1, workers + 1)
         ]
+        for _ in range(workers):
+            task_queue.put(None)
+        task_queue.join()
 
     summary = Summary()
     for future in futures:
@@ -145,4 +197,9 @@ def _run_live(
         summary.processed += worker_summary.processed
         summary.succeeded += worker_summary.succeeded
         summary.failed += worker_summary.failed
+    summary.rows_read = read_stats.rows_read
+    summary.valid = read_stats.valid
+    summary.ignored = read_stats.ignored
+    summary.duplicates = read_stats.duplicates
+    summary.skipped = read_stats.skipped
     return summary

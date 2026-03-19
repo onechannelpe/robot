@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import queue
 import random
 import time
 
@@ -16,6 +15,8 @@ from robot.runtime.retry import decide
 
 
 if TYPE_CHECKING:
+    import queue
+
     from robot.runtime.proxies import ProxyLease, ProxyPool
 
 
@@ -50,7 +51,7 @@ class Worker:
         *,
         worker_id: int,
         run_id: str,
-        task_queue: queue.Queue[RUC],
+        task_queue: queue.Queue[RUC | None],
         proxy_pool: ProxyPool,
         writer: ResultWriter,
         settings: WorkerSettings,
@@ -69,9 +70,9 @@ class Worker:
     def run(self) -> WorkerSummary:
         summary = WorkerSummary()
         while True:
-            try:
-                ruc = self._task_queue.get_nowait()
-            except queue.Empty:
+            ruc = self._task_queue.get()
+            if ruc is None:
+                self._task_queue.task_done()
                 break
 
             try:

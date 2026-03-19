@@ -10,6 +10,7 @@ from robot.domain import RUC
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from queue import Queue
 
 
 @dataclass
@@ -18,12 +19,20 @@ class ReadStats:
     valid: int = 0
     ignored: int = 0
     duplicates: int = 0
+    skipped: int = 0
+    enqueued: int = 0
 
 
-def read_rucs(path: Path, *, dedupe: bool = True) -> tuple[list[RUC], ReadStats]:
+def enqueue_rucs(
+    path: Path,
+    task_queue: Queue[RUC | None],
+    *,
+    dedupe: bool = True,
+    checkpoint: set[str] | None = None,
+) -> ReadStats:
     stats = ReadStats()
+    checkpoint = checkpoint or set()
     seen: set[str] = set()
-    rucs: list[RUC] = []
 
     with path.open(newline="", encoding="utf-8-sig") as file_obj:
         for row in csv.reader(file_obj):
@@ -42,6 +51,10 @@ def read_rucs(path: Path, *, dedupe: bool = True) -> tuple[list[RUC], ReadStats]
                 continue
             seen.add(dedupe_key)
             stats.valid += 1
-            rucs.append(ruc)
+            if dedupe_key in checkpoint:
+                stats.skipped += 1
+                continue
+            task_queue.put(ruc)
+            stats.enqueued += 1
 
-    return rucs, stats
+    return stats
