@@ -113,7 +113,7 @@ class Worker:
         self, session: BrowserSession, ruc: RUC, *, attempt_no: int
     ) -> Result:
         with timed() as timer:
-            lines = session.count_lines(ruc)
+            total_lines, carrier_lines = session.count_carrier_lines(ruc)
         logger.info(
             "lookup_ok %s",
             kv(
@@ -125,12 +125,18 @@ class Worker:
                 ruc=ruc,
                 attempt=attempt_no,
                 elapsed_ms=timer.elapsed_ms,
-                lines=lines,
+                lines=total_lines,
+                carriers=len(carrier_lines),
             ),
         )
         self._session_uses += 1
         self._maybe_rotate_session_after_success()
-        return Result(ruc=ruc, total_lines=lines, status=Status.OK)
+        return Result(
+            ruc=ruc,
+            total_lines=total_lines,
+            carrier_lines=carrier_lines,
+            status=Status.OK,
+        )
 
     def _handle_failure(
         self, ruc: RUC, exc: RobotError, *, attempt_no: int, attempts: int

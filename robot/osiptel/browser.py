@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import operator
 import time
 
 from dataclasses import dataclass
@@ -10,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from selenium.common.exceptions import WebDriverException
 from seleniumbase import SB  # type: ignore[import-untyped]
 
-from robot.domain import RUC
+from robot.domain import RUC, CarrierLines
 from robot.errors import (
     BanSignalError,
     CaptchaError,
@@ -127,10 +128,15 @@ class BrowserSession:
             self._sb = None
 
     def count_lines(self, ruc: RUC) -> int:
+        total, _ = self.count_carrier_lines(ruc)
+        return total
+
+    def count_carrier_lines(self, ruc: RUC) -> tuple[int, tuple[CarrierLines, ...]]:
         sb = self._require_sb()
         total: int | None = None
         start = 0
         draw = 2
+        counts: dict[str, int] = {}
 
         while True:
             token = self._generate_recaptcha_token()
@@ -147,6 +153,7 @@ class BrowserSession:
                 total = int(payload.get("iTotalRecords", 0) or 0)
 
             rows = payload.get("aaData") or []
+            _accumulate_carriers(counts, rows)
             logger.debug(
                 "api_page %s",
                 kv(
@@ -168,7 +175,11 @@ class BrowserSession:
             if start >= total:
                 break
 
-        return total or 0
+        carrier_lines = tuple(
+            CarrierLines(carrier=name, lines=lines)
+            for name, lines in sorted(counts.items(), key=operator.itemgetter(0))
+        )
+        return total or 0, carrier_lines
 
     def _require_sb(self) -> SB:
         if self._sb is None:
@@ -345,3 +356,37 @@ def _fetch_page(
         msg = "osiptel response json is not an object"
         raise ParseError(msg)
     return payload
+
+
+def _accumulate_carriers(counts: dict[str, int], rows: object) -> None:
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        carrier = _extract_carrier_name(row)
+        counts[carrier] = counts.get(carrier, 0) + 1
+
+
+def _extract_carrier_name(row: object) -> str:
+    if isinstance(row, dict):
+        value = row.get("operador")
+        if isinstance(value, str):
+            normalized = _normalize_carrier(value)
+            if normalized:
+                return normalized
+        for key, value in row.items():
+            if "operador" not in key.casefold():
+                continue
+            if isinstance(value, str):
+                normalized = _normalize_carrier(value)
+                if normalized:
+                    return normalized
+    if isinstance(row, list) and len(row) >= 4 and isinstance(row[3], str):
+        normalized = _normalize_carrier(row[3])
+        if normalized:
+            return normalized
+    return "unknown"
+
+
+def _normalize_carrier(value: str) -> str:
+    normalized = " ".join(value.strip().split())
+    return normalized or "unknown"
