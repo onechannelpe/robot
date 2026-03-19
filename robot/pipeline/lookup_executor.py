@@ -32,6 +32,7 @@ def execute_lookup(
     for attempt_no in range(1, MAX_ATTEMPTS_PER_RUC + 1):
         try:
             active = runtime.ensure_active()
+            runtime.refresh_egress_ip()
             started = time.perf_counter()
             total, carrier_counts = count_carrier_lines(
                 session=active.browser,

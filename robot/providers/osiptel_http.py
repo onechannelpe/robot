@@ -5,6 +5,7 @@ import logging
 import time
 
 from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import httpx
@@ -19,6 +20,11 @@ if TYPE_CHECKING:
 
 
 API_URL = "https://checatuslineas.osiptel.gob.pe/Consultas/GetAllCabeceraConsulta/"
+_IP_PROBE_URLS = (
+    "http://ip-api.com/json",
+    "https://api.ipify.org?format=json",
+    "http://httpbin.org/ip",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -82,21 +88,49 @@ def build_headers(*, user_agent: str, cookie_header: str) -> dict[str, str]:
 
 
 def resolve_egress_ip(proxy: ProxySessionConfig) -> str:
-    url = "http://ip-api.com/json"
+    with httpx.Client(proxy=proxy.as_http_proxy_url(), timeout=5.0) as client:
+        for _ in range(3):
+            for url in _IP_PROBE_URLS:
+                value = _probe_ip(client, url)
+                if value:
+                    return value
+            time.sleep(0.2)
+    return ""
+
+
+def _probe_ip(client: httpx.Client, url: str) -> str:
     try:
-        with httpx.Client(proxy=proxy.as_http_proxy_url(), timeout=15.0) as client:
-            response = client.get(url)
-        if response.status_code != 200:
-            return ""
+        response = client.get(url)
+    except httpx.HTTPError:
+        return ""
+    if response.status_code != 200:
+        return ""
+    try:
         payload = response.json()
-        if not isinstance(payload, dict):
-            return ""
-        value = payload.get("query")
-        if isinstance(value, str):
-            return value
+    except ValueError:
+        payload = None
+    return _extract_ip(payload)
+
+
+def _extract_ip(payload: object) -> str:
+    if not isinstance(payload, dict):
         return ""
-    except (httpx.HTTPError, ValueError):
-        return ""
+    for key in ("query", "ip", "origin"):
+        value = payload.get(key)
+        if not isinstance(value, str):
+            continue
+        candidate = value.split(",", 1)[0].strip()
+        if _is_valid_ip(candidate):
+            return candidate
+    return ""
+
+
+def _is_valid_ip(value: str) -> bool:
+    try:
+        ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 class OsiptelHttpClient:
@@ -145,12 +179,22 @@ class OsiptelHttpClient:
         status = response.status_code
         if status >= 500:
             response_text = response.text.replace("\n", " ").strip()[:160]
+            logger.warning(
+                "osiptel_request_failed %s",
+                kv(
+                    status=status,
+                    ruc=req.ruc,
+                    draw=req.draw,
+                    start=req.start,
+                    length=req.length,
+                    body=response_text,
+                ),
+            )
             msg = (
                 "osiptel request failed "
                 f"status={status} draw={req.draw} start={req.start} length={req.length} "
                 f"ruc={req.ruc} body={response_text}"
             )
-            logger.warning(msg)
             raise BanSignalError(msg)
         if status != 200:
             msg = f"osiptel request failed status={status}"

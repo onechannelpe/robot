@@ -27,6 +27,7 @@ class ActiveSession:
     browser: BrowserSession
     uses: int = 0
     egress_ip: str = ""
+    egress_ip_warned: bool = False
 
 
 class SessionRuntime:
@@ -92,6 +93,7 @@ class SessionRuntime:
             uses=0,
             egress_ip=egress_ip,
         )
+        final_egress_ip = self.refresh_egress_ip()
         logger.info(
             "%s %s",
             SESSION_READY,
@@ -100,7 +102,7 @@ class SessionRuntime:
                 worker_id=self._worker_id,
                 session_id=browser.session_id,
                 proxy_id=browser.proxy_id,
-                egress_ip=egress_ip,
+                egress_ip=final_egress_ip,
             ),
         )
         return self._active
@@ -140,6 +142,30 @@ class SessionRuntime:
         if self._active is None:
             return ""
         return self._active.egress_ip
+
+    def refresh_egress_ip(self) -> str:
+        if self._active is None:
+            return ""
+        if self._active.egress_ip:
+            return self._active.egress_ip
+
+        resolved = resolve_egress_ip(self._active.session)
+        if resolved:
+            self._active.egress_ip = resolved
+            self._active.egress_ip_warned = False
+            return resolved
+        if not self._active.egress_ip_warned:
+            logger.warning(
+                "egress_ip_unresolved %s",
+                kv(
+                    run_id=self._run_id,
+                    worker_id=self._worker_id,
+                    session_id=self._active.browser.session_id,
+                    proxy_id=self._active.browser.proxy_id,
+                ),
+            )
+            self._active.egress_ip_warned = True
+        return ""
 
     @property
     def last_proxy_id(self) -> str:
